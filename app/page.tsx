@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "../components/Toast";
 
-/* ---------- Brand utility classes ---------- */
+/* ---------- UI utility classes ---------- */
 const inputCls =
   "px-3 py-2 rounded-lg bg-[#2B2B3D] border border-white/10 text-white " +
   "placeholder:text-[#B0B0B0] focus:border-[#007BFF] focus:ring-2 " +
@@ -15,6 +15,7 @@ const btnPrimary =
 const cardCls =
   "p-5 rounded-2xl border border-white/10 bg-[#2B2B3D] shadow-[0_10px_30px_-10px_rgba(0,123,255,0.25)]";
 
+/* ---------- Types ---------- */
 type UnifiedEvent = {
   id: string;
   name: string;
@@ -35,26 +36,33 @@ function isoToday() {
 }
 
 export default function Home() {
-  // Filters
+  /* ---------- Filters ---------- */
+  const [keyword, setKeyword] = useState(""); // general search term
   const [city, setCity] = useState("");
-  const [keyword, setKeyword] = useState("");
   const [countryCode, setCountryCode] = useState("");
   const [startDate, setStartDate] = useState(isoToday());
   const [endDate, setEndDate] = useState("");
 
-  // Results + UX
+  /* ---------- Results & UX ---------- */
   const [events, setEvents] = useState<UnifiedEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
 
-  // AI summary
+  /* ---------- AI summary ---------- */
   const [aiSummary, setAiSummary] = useState<string>("");
   const [aiInfo, setAiInfo] = useState<string>("");
 
-  // Which events are already saved (disable button + change label)
+  /* ---------- Itinerary state (disable “Add” after save) ---------- */
   const [added, setAdded] = useState<Set<string>>(new Set());
 
-  // Auto-guess country for common cities (optional nicety)
+  /* ---------- Autocomplete + Wiki blurb ---------- */
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSug, setShowSug] = useState(false);
+  const [wikiText, setWikiText] = useState("");
+  const [wikiLoading, setWikiLoading] = useState(false);
+  const sugTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* ---------- Nice-to-have: auto guess country for known cities ---------- */
   useEffect(() => {
     if (!city || countryCode) return;
     const c = city.toLowerCase();
@@ -68,13 +76,13 @@ export default function Home() {
     if (guess) setCountryCode(guess);
   }, [city, countryCode]);
 
-  // Mark already-saved items on first load
+  /* ---------- Load saved itinerary IDs on first render ---------- */
   useEffect(() => {
     const saved: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
     setAdded(new Set(saved.map((e: any) => e.id)));
   }, []);
 
-  // Map unified event -> TM-like shape used by /itinerary page
+  /* ---------- Save to itinerary & toast feedback ---------- */
   function saveToItineraryUnified(ev: UnifiedEvent) {
     try {
       const mapped = {
@@ -105,7 +113,6 @@ export default function Home() {
 
       const key = "fq_itinerary";
       const current: any[] = JSON.parse(localStorage.getItem(key) || "[]");
-
       if (current.some((e) => e.id === mapped.id)) {
         setAdded((prev) => new Set(prev).add(mapped.id));
         toast("Already in your itinerary", "info");
@@ -127,6 +134,45 @@ export default function Home() {
     }
   }
 
+  /* ---------- Autocomplete (debounced) ---------- */
+  function debouncedSuggest(q: string) {
+    if (sugTimerRef.current) clearTimeout(sugTimerRef.current);
+    if (!q || q.length < 2) {
+      setSuggestions([]);
+      setShowSug(false);
+      return;
+    }
+    sugTimerRef.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`);
+        const j = await r.json();
+        setSuggestions(j?.suggestions || []);
+        setShowSug(true);
+      } catch {
+        setSuggestions([]);
+        setShowSug(false);
+      }
+    }, 200);
+  }
+
+  /* ---------- Wiki blurb ---------- */
+  async function loadWikiBlurb(term: string) {
+    try {
+      setWikiLoading(true);
+      setWikiText("");
+      const r = await fetch("/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic: term }),
+      });
+      const j = await r.json();
+      setWikiText(j?.blurb || "");
+    } finally {
+      setWikiLoading(false);
+    }
+  }
+
+  /* ---------- Search ---------- */
   async function handleSearch() {
     setLoading(true);
     setError("");
@@ -143,7 +189,7 @@ export default function Home() {
         endDate: endDate || undefined,
       };
 
-      // 1) Multi-source search
+      // 1) Multi-source events
       const res = await fetch("/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -154,16 +200,15 @@ export default function Home() {
       const evts: UnifiedEvent[] = data?.events || [];
       setEvents(evts);
 
-      // Update "added" state so buttons show correctly
-      const savedAfterSearch: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
-      setAdded(new Set(savedAfterSearch.map((e: any) => e.id)));
+      // reflect existing itinerary
+      const saved: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
+      setAdded(new Set(saved.map((e: any) => e.id)));
 
-      // 2) AI summary (optional; handles limits gracefully)
+      // 2) AI summary (best effort)
       if (evts.length) {
         const ai = await fetch("/api/ai-recommend", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // Pass keyword so AI can tailor tone/themes (route may ignore it harmlessly)
           body: JSON.stringify({ events: evts.slice(0, 10), keyword: keyword.trim() || undefined }),
         });
 
@@ -177,15 +222,12 @@ export default function Home() {
           } else {
             setAiInfo("AI summary unavailable.");
           }
-          return;
+        } else {
+          const aiData = await ai.json();
+          setAiSummary(aiData?.summary || "");
         }
-
-        const aiData = await ai.json();
-        setAiSummary(aiData?.summary || "");
       } else {
-        setAiSummary(
-          "No events match your filters. Try widening the dates or removing the country."
-        );
+        setAiSummary("No events match your filters. Try widening the dates or clearing country.");
       }
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
@@ -194,17 +236,16 @@ export default function Home() {
     }
   }
 
-  // Handy demo
+  /* ---------- Sample / keyboard helpers ---------- */
   async function sampleBerlinJazz() {
-    setCity("Berlin");
     setKeyword("jazz");
+    setCity("Berlin");
     setCountryCode("DE");
     setStartDate(isoToday());
     setEndDate("");
     await handleSearch();
   }
 
-  // Allow Enter anywhere in the form to trigger search
   function onFormKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -212,13 +253,14 @@ export default function Home() {
     }
   }
 
+  /* ---------- Render ---------- */
   return (
     <main className="min-h-screen bg-[#1E1E2F] text-white">
       <div className="max-w-6xl mx-auto px-4 py-10">
-        {/* Brand header inside page (layout header shows logo/nav) */}
+        {/* Brand */}
         <div className="text-center">
-          <h1 className="text-5xl font-extrabold tracking-tight">FestQuest</h1>
-          <p className="text-[#B0B0B0] mt-2 text-lg">
+          <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight">FestQuest</h1>
+          <p className="text-[#B0B0B0] mt-2 text-base md:text-lg">
             Discover, plan, and chase all the events of the world!
           </p>
           <p className="mt-2">
@@ -228,80 +270,160 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Search form */}
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-6 gap-3" onKeyDown={onFormKeyDown}>
-          <input
-            className={`${inputCls} md:col-span-2`}
-            placeholder="City (e.g., Berlin)"
-            value={city}
-            onChange={(e) => setCity(e.target.value)}
-          />
-          <input
-            className={`${inputCls} md:col-span-2`}
-            placeholder="General search (e.g., libori, christmas, wimbledon)"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-          />
-          <input
-            className={inputCls}
-            placeholder="Country code (US, DE, FR…) • optional"
-            value={countryCode}
-            onChange={(e) => setCountryCode(e.target.value.toUpperCase())}
-            maxLength={2}
-          />
-          <button onClick={handleSearch} disabled={loading} className={btnPrimary}>
-            {loading ? "Searching…" : "Search"}
-          </button>
-
-          {/* Dates */}
-          <div className="md:col-span-3 flex items-center gap-2">
-            <span className="text-sm text-[#B0B0B0] w-24">Start date</span>
-            <input
-              type="date"
-              className={`${inputCls} flex-1 [color-scheme:dark]`}
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
+        {/* ---------- Search card ---------- */}
+        <div className={`${cardCls} mt-8`} onKeyDown={onFormKeyDown}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Find Events</h2>
+            <button onClick={sampleBerlinJazz} className="text-sm text-[#60A5FA] hover:underline">
+              Try sample: Berlin + jazz
+            </button>
           </div>
-          <div className="md:col-span-3 flex items-center gap-2">
-            <span className="text-sm text-[#B0B0B0] w-24">End date</span>
-            <input
-              type="date"
-              className={`${inputCls} flex-1 [color-scheme:dark]`}
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+            {/* Keyword (7/12) */}
+            <div className="relative md:col-span-7">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-1">
+                Event I&apos;m Looking for
+              </label>
+              <input
+                className={`${inputCls} w-full`}
+                placeholder="e.g., Libori, Durga Puja, Wimbledon, Oktoberfest…"
+                value={keyword}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setKeyword(v);
+                  debouncedSuggest(v);
+                  if (v.length >= 2) loadWikiBlurb(v);
+                  else setWikiText("");
+                }}
+                onFocus={() => { if (suggestions.length) setShowSug(true); }}
+                onBlur={() => setTimeout(() => setShowSug(false), 150)}
+              />
+              {showSug && suggestions.length > 0 && (
+                <div className="absolute z-50 mt-1 w-full rounded-lg border border-white/10 bg-[#1E1E2F] shadow-lg">
+                  {suggestions.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => { setKeyword(s); setShowSug(false); loadWikiBlurb(s); }}
+                      className="block w-full text-left px-3 py-2 hover:bg-white/5"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* City (3/12) */}
+            <div className="md:col-span-3">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-1">City</label>
+              <input
+                className={`${inputCls} w-full`}
+                placeholder="City (e.g., Berlin)"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+              />
+            </div>
+
+            {/* Country (2/12) */}
+            <div className="md:col-span-2">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-1">Country</label>
+              <input
+                className={`${inputCls} w-full`}
+                placeholder="US, DE…"
+                value={countryCode}
+                onChange={(e) => setCountryCode(e.target.value.toUpperCase())}
+                maxLength={2}
+              />
+            </div>
+
+            {/* Start date (3/12) */}
+            <div className="md:col-span-3">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-1">Start date</label>
+              <input
+                type="date"
+                className={`${inputCls} w-full [color-scheme:dark]`}
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+              />
+            </div>
+
+            {/* End date (3/12) */}
+            <div className="md:col-span-3">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-1">End date</label>
+              <input
+                type="date"
+                className={`${inputCls} w-full [color-scheme:dark]`}
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+              />
+            </div>
+
+            {/* Search button (3/12) */}
+            <div className="md:col-span-3 flex items-end">
+              <button onClick={handleSearch} disabled={loading} className={`${btnPrimary} w-full`}>
+                {loading ? "Searching…" : "Search"}
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="mt-2">
-          <button onClick={sampleBerlinJazz} className="text-sm text-[#60A5FA] hover:underline">
-            Try sample: Berlin + jazz
-          </button>
-        </div>
-
-        {/* Error */}
+        {/* Errors */}
         {error && (
           <div className="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700/60 text-red-200">
             ❌ {error}
           </div>
         )}
 
-        {/* AI Summary */}
-        <div className={`${cardCls} mt-6`}>
-          <h2 className="font-semibold text-white/90 mb-2">AI Travel Guide</h2>
-          {aiSummary ? (
-            <p className="text-white/80 whitespace-pre-line">{aiSummary}</p>
-          ) : (
-            <p className="text-white/50">
-              {aiInfo ||
-                (loading ? "Generating ideas…" : "AI summary will appear here after a search.")}
-            </p>
-          )}
+        {/* ---------- Context strip (Wiki + AI) ---------- */}
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Wiki */}
+          <div className={cardCls}>
+            <h2 className="font-semibold text-white/90 mb-2">What is “{keyword || "this"}”?</h2>
+            {wikiLoading ? (
+              <p className="text-white/50">Finding background…</p>
+            ) : wikiText ? (
+              <p className="text-white/80 whitespace-pre-line">{wikiText}</p>
+            ) : (
+              <p className="text-white/50">Type an event name to see a quick background.</p>
+            )}
+          </div>
+
+          {/* AI */}
+          <div className={cardCls}>
+            <h2 className="font-semibold text-white/90 mb-2">AI Travel Guide</h2>
+            {aiSummary ? (
+              <p className="text-white/80 whitespace-pre-line">{aiSummary}</p>
+            ) : (
+              <p className="text-white/50">
+                {aiInfo || (loading ? "Generating ideas…" : "AI summary will appear here after a search.")}
+              </p>
+            )}
+          </div>
         </div>
 
-        {/* Results */}
-        <div className="mt-6 space-y-4">
+        {/* ---------- Results header ---------- */}
+        <div className="mt-8 flex items-center justify-between">
+          <div className="text-sm text-white/70">
+            {loading
+              ? "Searching events…"
+              : events.length
+              ? `${events.length} event${events.length === 1 ? "" : "s"} found`
+              : "No results yet"}
+          </div>
+          <div className="flex gap-2 text-xs">
+            {keyword && <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">Keyword: {keyword}</span>}
+            {city && <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">City: {city}</span>}
+            {countryCode && <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">Country: {countryCode}</span>}
+            {startDate && <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">From: {startDate}</span>}
+            {endDate && <span className="px-2 py-1 rounded-full bg-white/5 border border-white/10">To: {endDate}</span>}
+          </div>
+        </div>
+
+        {/* ---------- Results list ---------- */}
+        <div className="mt-4 space-y-4">
           {events.map((ev) => (
             <div key={ev.id} className={cardCls}>
               <div className="flex gap-4">
@@ -328,7 +450,6 @@ export default function Home() {
                     {ev.city ? `, ${ev.city}` : ""}
                     {ev.country ? `, ${ev.country}` : ""}
                   </p>
-
                   <div className="mt-3 flex gap-5">
                     {ev.url && (
                       <a
@@ -340,7 +461,6 @@ export default function Home() {
                         View Event
                       </a>
                     )}
-
                     <button
                       onClick={() => saveToItineraryUnified(ev)}
                       disabled={added.has(ev.id)}
@@ -360,8 +480,7 @@ export default function Home() {
 
           {!loading && !events.length && !error && (
             <p className="text-white/60">
-              No results yet — try a city and a general keyword (e.g.,{" "}
-              <b>Cologne</b> + <b>christmas</b>).
+              Try combining a city and a keyword (e.g., <b>Cologne</b> + <b>christmas</b>).
             </p>
           )}
         </div>
