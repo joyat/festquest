@@ -24,3 +24,23 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+/* Tailwind */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Use the Google font variable */
+:root { --font-jakarta: system-ui; }
+.font-sans { font-family: var(--font-jakarta), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+
+/* Better focus ring */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid #007BFF;
+  outline-offset: 2px;
+}
+
+/* Selection color */
+::selection {
+  background: #6C63FF;
+  color: white;
+}
