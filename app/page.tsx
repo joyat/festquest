@@ -35,6 +35,40 @@ function isoToday() {
   ).padStart(2, "0")}`;
 }
 
+/* ---------- Adaptive heading for wiki box ---------- */
+function infoTitle(term: string, blurb: string) {
+  const t = (term || "").trim();
+  if (!t) return "Highlights";
+
+  const tl = t.toLowerCase();
+  const b = (blurb || "").toLowerCase();
+
+  const festivalWords = [
+    "festival","fest","fair","carnival","fiesta","parade","market",
+    "mela","puja","oktoberfest","karneval","concert","tour",
+    "cup","open","championship","grand slam","world cup","tournament"
+  ];
+  const personSignals = [
+    "singer","rapper","dj","band","artist","composer","playwright","actor",
+    "guitarist","born","is an","is a","was an","footballer","tennis player"
+  ];
+  const placeSignals = [
+    "city","capital","town","municipality","located in","region","district",
+    "province","state of","country","metropolitan"
+  ];
+
+  const isFestival = festivalWords.some(k => tl.includes(k) || b.includes(k));
+  const isPerson = !isFestival && personSignals.some(k => b.includes(k));
+  const isPlace  = !isFestival && !isPerson && placeSignals.some(k => b.includes(k));
+
+  if (isPerson) return `About ${t}`;
+  if (isFestival) return b.includes("sport") || tl.includes("cup") || tl.includes("open")
+    ? "Event Highlights"
+    : "Festival Highlights";
+  if (isPlace) return `${t} at a glance`;
+  return `About ${t}`;
+}
+
 export default function Home() {
   /* ---------- Filters ---------- */
   const [keyword, setKeyword] = useState(""); // general search term
@@ -381,7 +415,9 @@ export default function Home() {
         <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Wiki */}
           <div className={cardCls}>
-            <h2 className="font-semibold text-white/90 mb-2">What is “{keyword || "this"}”?</h2>
+            <h2 className="font-semibold text-white/90 mb-2">
+              {infoTitle(keyword, wikiText)}
+            </h2>
             {wikiLoading ? (
               <p className="text-white/50">Finding background…</p>
             ) : wikiText ? (
