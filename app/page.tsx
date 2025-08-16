@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "../components/Toast";
-
 
 /* ---------- Brand utility classes ---------- */
 const inputCls =
@@ -51,7 +51,7 @@ export default function Home() {
   const [aiSummary, setAiSummary] = useState<string>("");
   const [aiInfo, setAiInfo] = useState<string>("");
 
-    // Track which events are already saved
+  // Which events are already saved (disable button + change label)
   const [added, setAdded] = useState<Set<string>>(new Set());
 
   // Auto-guess country for common cities (optional nicety)
@@ -68,14 +68,13 @@ export default function Home() {
     if (guess) setCountryCode(guess);
   }, [city, countryCode]);
 
-    // Mark already-saved items on first load
+  // Mark already-saved items on first load
   useEffect(() => {
     const saved: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
     setAdded(new Set(saved.map((e: any) => e.id)));
   }, []);
 
   // Map unified event -> TM-like shape used by /itinerary page
-  // Replace alert()s with toast() + track "added"
   function saveToItineraryUnified(ev: UnifiedEvent) {
     try {
       const mapped = {
@@ -159,23 +158,22 @@ export default function Home() {
       const savedAfterSearch: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
       setAdded(new Set(savedAfterSearch.map((e: any) => e.id)));
 
-      // 2) AI summary (optional; handles quota limits gracefully)
+      // 2) AI summary (optional; handles limits gracefully)
       if (evts.length) {
         const ai = await fetch("/api/ai-recommend", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ events: evts.slice(0, 10) }),
+          // Pass keyword so AI can tailor tone/themes (route may ignore it harmlessly)
+          body: JSON.stringify({ events: evts.slice(0, 10), keyword: keyword.trim() || undefined }),
         });
 
         if (!ai.ok) {
           const aiErr = await ai.json().catch(() => ({}));
-          const msg = (aiErr?.error || "").toString();
-          if (msg.includes("quota") || msg.includes("429")) {
-            setAiInfo(
-              "AI summary unavailable (OpenAI quota exceeded). Event results are still shown below."
-            );
-          } else if (msg) {
-            setAiInfo(`AI summary unavailable: ${msg}`);
+          const msg = (aiErr?.error || "").toString().toLowerCase();
+          if (msg.includes("quota") || msg.includes("429") || msg.includes("rate")) {
+            setAiInfo("AI summary temporarily unavailable. Event results are still shown below.");
+          } else if (aiErr?.error) {
+            setAiInfo(`AI summary unavailable: ${aiErr.error}`);
           } else {
             setAiInfo("AI summary unavailable.");
           }
@@ -206,6 +204,14 @@ export default function Home() {
     await handleSearch();
   }
 
+  // Allow Enter anywhere in the form to trigger search
+  function onFormKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (!loading) handleSearch();
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#1E1E2F] text-white">
       <div className="max-w-6xl mx-auto px-4 py-10">
@@ -216,14 +222,14 @@ export default function Home() {
             Discover, plan, and chase all the events of the world!
           </p>
           <p className="mt-2">
-            <a href="/itinerary" className="text-[#6C63FF] hover:underline">
+            <Link href="/itinerary" className="text-[#6C63FF] hover:underline">
               View Itinerary →
-            </a>
+            </Link>
           </p>
         </div>
 
         {/* Search form */}
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-6 gap-3">
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-6 gap-3" onKeyDown={onFormKeyDown}>
           <input
             className={`${inputCls} md:col-span-2`}
             placeholder="City (e.g., Berlin)"
@@ -232,13 +238,13 @@ export default function Home() {
           />
           <input
             className={`${inputCls} md:col-span-2`}
-            placeholder="Festival type / keyword (e.g., jazz, film, carnival)"
+            placeholder="General search (e.g., libori, christmas, wimbledon)"
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
           />
           <input
             className={inputCls}
-            placeholder="Country (US, DE, FR…)"
+            placeholder="Country code (US, DE, FR…) • optional"
             value={countryCode}
             onChange={(e) => setCountryCode(e.target.value.toUpperCase())}
             maxLength={2}
@@ -247,7 +253,7 @@ export default function Home() {
             {loading ? "Searching…" : "Search"}
           </button>
 
-        {/* Dates */}
+          {/* Dates */}
           <div className="md:col-span-3 flex items-center gap-2">
             <span className="text-sm text-[#B0B0B0] w-24">Start date</span>
             <input
@@ -285,7 +291,7 @@ export default function Home() {
         <div className={`${cardCls} mt-6`}>
           <h2 className="font-semibold text-white/90 mb-2">AI Travel Guide</h2>
           {aiSummary ? (
-            <p className="text-white/80">{aiSummary}</p>
+            <p className="text-white/80 whitespace-pre-line">{aiSummary}</p>
           ) : (
             <p className="text-white/50">
               {aiInfo ||
@@ -313,7 +319,7 @@ export default function Home() {
                       className="text-[10px] uppercase px-2 py-1 rounded-full border border-white/10"
                       title="Data source"
                     >
-                      {ev.source}
+                      {ev.source?.toUpperCase?.() || ev.source}
                     </span>
                   </div>
                   <p className="text-white/80">Date: {ev.date || "TBA"}</p>
@@ -334,18 +340,18 @@ export default function Home() {
                         View Event
                       </a>
                     )}
+
                     <button
-  onClick={() => saveToItineraryUnified(ev)}
-  disabled={added.has(ev.id)}
-  className={`underline underline-offset-4 ${
-    added.has(ev.id)
-      ? "text-white/40 cursor-not-allowed"
-      : "text-[#34D399] hover:text-white"
-  }`}
->
-  {added.has(ev.id) ? "Added" : "Add to Itinerary"}
+                      onClick={() => saveToItineraryUnified(ev)}
+                      disabled={added.has(ev.id)}
+                      className={`underline underline-offset-4 ${
+                        added.has(ev.id)
+                          ? "text-white/40 cursor-not-allowed"
+                          : "text-[#34D399] hover:text-white"
+                      }`}
+                    >
+                      {added.has(ev.id) ? "Added" : "Add to Itinerary"}
                     </button>
-                  
                   </div>
                 </div>
               </div>
@@ -354,7 +360,8 @@ export default function Home() {
 
           {!loading && !events.length && !error && (
             <p className="text-white/60">
-              No results yet — try setting a city and a festival type (e.g., <b>Berlin</b> + <b>jazz</b>).
+              No results yet — try a city and a general keyword (e.g.,{" "}
+              <b>Cologne</b> + <b>christmas</b>).
             </p>
           )}
         </div>
