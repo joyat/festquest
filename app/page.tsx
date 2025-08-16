@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "../components/Toast";
+
 
 /* ---------- Brand utility classes ---------- */
 const inputCls =
@@ -49,6 +51,9 @@ export default function Home() {
   const [aiSummary, setAiSummary] = useState<string>("");
   const [aiInfo, setAiInfo] = useState<string>("");
 
+    // Track which events are already saved
+  const [added, setAdded] = useState<Set<string>>(new Set());
+
   // Auto-guess country for common cities (optional nicety)
   useEffect(() => {
     if (!city || countryCode) return;
@@ -63,7 +68,14 @@ export default function Home() {
     if (guess) setCountryCode(guess);
   }, [city, countryCode]);
 
+    // Mark already-saved items on first load
+  useEffect(() => {
+    const saved: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
+    setAdded(new Set(saved.map((e: any) => e.id)));
+  }, []);
+
   // Map unified event -> TM-like shape used by /itinerary page
+  // Replace alert()s with toast() + track "added"
   function saveToItineraryUnified(ev: UnifiedEvent) {
     try {
       const mapped = {
@@ -87,16 +99,32 @@ export default function Home() {
         source: ev.source,
       };
 
-      const key = "fq_itinerary";
-      const current = JSON.parse(localStorage.getItem(key) || "[]");
-      if (current.some((e: any) => e.id === mapped.id)) {
-        alert("Already in your itinerary!");
+      if (added.has(mapped.id)) {
+        toast("Already in your itinerary", "info");
         return;
       }
-      localStorage.setItem(key, JSON.stringify([...current, mapped]));
-      alert("Added to itinerary 🎉");
+
+      const key = "fq_itinerary";
+      const current: any[] = JSON.parse(localStorage.getItem(key) || "[]");
+
+      if (current.some((e) => e.id === mapped.id)) {
+        setAdded((prev) => new Set(prev).add(mapped.id));
+        toast("Already in your itinerary", "info");
+        return;
+      }
+
+      const next = [...current, mapped];
+      localStorage.setItem(key, JSON.stringify(next));
+
+      setAdded((prev) => {
+        const s = new Set(prev);
+        s.add(mapped.id);
+        return s;
+      });
+
+      toast("Added to itinerary 🎉", "success");
     } catch {
-      alert("Could not save to itinerary.");
+      toast("Could not save to itinerary", "error");
     }
   }
 
@@ -126,6 +154,10 @@ export default function Home() {
       if (!res.ok) throw new Error(data?.error || "Search failed");
       const evts: UnifiedEvent[] = data?.events || [];
       setEvents(evts);
+
+      // Update "added" state so buttons show correctly
+      const savedAfterSearch: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
+      setAdded(new Set(savedAfterSearch.map((e: any) => e.id)));
 
       // 2) AI summary (optional; handles quota limits gracefully)
       if (evts.length) {
@@ -303,11 +335,17 @@ export default function Home() {
                       </a>
                     )}
                     <button
-                      onClick={() => saveToItineraryUnified(ev)}
-                      className="text-[#34D399] hover:text-white underline underline-offset-4"
-                    >
-                      Add to Itinerary
+  onClick={() => saveToItineraryUnified(ev)}
+  disabled={added.has(ev.id)}
+  className={`underline underline-offset-4 ${
+    added.has(ev.id)
+      ? "text-white/40 cursor-not-allowed"
+      : "text-[#34D399] hover:text-white"
+  }`}
+>
+  {added.has(ev.id) ? "Added" : "Add to Itinerary"}
                     </button>
+                  
                   </div>
                 </div>
               </div>
