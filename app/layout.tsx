@@ -1,6 +1,7 @@
 import "./globals.css";
 import { Plus_Jakarta_Sans } from "next/font/google";
 import type { Metadata } from "next";
+import ToastHost from "../components/Toast";
 
 const jakarta = Plus_Jakarta_Sans({
   subsets: ["latin"],
@@ -8,10 +9,11 @@ const jakarta = Plus_Jakarta_Sans({
   display: "swap",
 });
 
+export const viewport = { themeColor: "#1E1E2F" };
+
 export const metadata: Metadata = {
   title: "FestQuest",
   description: "Discover, plan, and chase all the events of the world!",
-  themeColor: "#1E1E2F",
   icons: {
     icon: "/fq-icon.svg",               // favicon
     shortcut: "/fq-icon.svg",
@@ -55,6 +57,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <span>Made for travelers & festival lovers ✨</span>
           </div>
         </footer>
+        <ToastHost />
       </body>
     </html>
   );
