@@ -19,10 +19,10 @@ async function fetchWikiSummary(topic: string) {
 
   if (!r.ok) {
     console.error("Wiki fetch failed", r.status, await r.text());
-    return "";
+    return null;
   }
   const j = await r.json();
-  return (j?.extract as string) || "";
+  return j; // full summary JSON
 }
 
 // Fallback formatter: 4–6 short lines from the raw text (no AI)
@@ -92,15 +92,27 @@ export async function POST(req: Request) {
   try {
     const { topic } = await req.json();
     const t = (topic || "").trim();
-    if (t.length < 2) return NextResponse.json({ blurb: "" });
+    if (t.length < 2) return NextResponse.json({ blurb: "", image: "", url: "", title: "" });
 
-    const raw = await fetchWikiSummary(t);
-    if (!raw) return NextResponse.json({ blurb: "" });
+    const summary = await fetchWikiSummary(t);
+    if (!summary) return NextResponse.json({ blurb: "", image: "", url: "", title: "" });
+
+    const raw = (summary?.extract as string) || "";
+    if (!raw) return NextResponse.json({ blurb: "", image: "", url: "", title: summary?.title || t });
 
     const blurb = await aiPolish(raw, t);
-    return NextResponse.json({ blurb });
+
+    const image = summary?.originalimage?.source || summary?.thumbnail?.source || "";
+    const pageUrl =
+      summary?.content_urls?.desktop?.page ||
+      summary?.content_urls?.mobile?.page ||
+      (summary?.titles?.canonical
+        ? `https://en.wikipedia.org/wiki/${encodeURIComponent(summary.titles.canonical)}`
+        : "");
+
+    return NextResponse.json({ blurb, image, url: pageUrl, title: summary?.title || t });
   } catch (err) {
     console.error("Wiki route error", err);
-    return NextResponse.json({ blurb: "" }, { status: 200 });
+    return NextResponse.json({ blurb: "", image: "", url: "", title: "" }, { status: 200 });
   }
 }

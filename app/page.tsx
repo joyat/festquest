@@ -1,4 +1,6 @@
+
 "use client";
+import type React from "react";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -25,7 +27,7 @@ type UnifiedEvent = {
   country?: string;
   url?: string;
   image?: string;
-  source: "ticketmaster" | "eventbrite" | "seatgeek";
+  source: "ticketmaster" | "eventbrite" | "seatgeek" | "konzertkasse" | "reservix";
 };
 
 function isoToday() {
@@ -76,6 +78,20 @@ export default function Home() {
   const [countryCode, setCountryCode] = useState("");
   const [startDate, setStartDate] = useState(isoToday());
   const [endDate, setEndDate] = useState("");
+  const [tone, setTone] = useState("");
+
+  /* ---------- Provider selection (Phase 2+) ---------- */
+  const [providers, setProviders] = useState<string[]>([
+    "ticketmaster",
+    "eventbrite",
+    "seatgeek",
+    "konzertkasse",
+    "reservix",
+  ]);
+  const toggleProvider = (p: string) =>
+    setProviders((prev) =>
+      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
+    );
 
   /* ---------- Results & UX ---------- */
   const [events, setEvents] = useState<UnifiedEvent[]>([]);
@@ -94,6 +110,8 @@ export default function Home() {
   const [showSug, setShowSug] = useState(false);
   const [wikiText, setWikiText] = useState("");
   const [wikiLoading, setWikiLoading] = useState(false);
+  const [wikiImage, setWikiImage] = useState("");
+  const [wikiUrl, setWikiUrl] = useState("");
   const sugTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* ---------- Nice-to-have: auto guess country for known cities ---------- */
@@ -194,6 +212,8 @@ export default function Home() {
     try {
       setWikiLoading(true);
       setWikiText("");
+      setWikiImage("");
+      setWikiUrl("");
       const r = await fetch("/api/wiki", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -201,6 +221,8 @@ export default function Home() {
       });
       const j = await r.json();
       setWikiText(j?.blurb || "");
+      setWikiImage(j?.image || "");
+      setWikiUrl(j?.url || "");
     } finally {
       setWikiLoading(false);
     }
@@ -221,6 +243,8 @@ export default function Home() {
         countryCode: countryCode.trim() || undefined,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
+        providers,
+        tone: tone || undefined,
       };
 
       // 1) Multi-source events
@@ -243,7 +267,14 @@ export default function Home() {
         const ai = await fetch("/api/ai-recommend", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ events: evts.slice(0, 10), keyword: keyword.trim() || undefined }),
+          body: JSON.stringify({
+            events: evts.slice(0, 10),
+            city: city.trim() || undefined,
+            keyword: keyword.trim() || undefined,
+            startDate: startDate || undefined,
+            endDate: endDate || undefined,
+            tone: tone || undefined,
+          }),
         });
 
         if (!ai.ok) {
@@ -307,7 +338,7 @@ export default function Home() {
         {/* ---------- Search card ---------- */}
         <div className={`${cardCls} mt-8`} onKeyDown={onFormKeyDown}>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">Find Events</h2>
+            <h2 className="text-lg font-semibold">FIND your Fest</h2>
             <button onClick={sampleBerlinJazz} className="text-sm text-[#60A5FA] hover:underline">
               Try sample: Berlin + jazz
             </button>
@@ -328,7 +359,7 @@ export default function Home() {
                   setKeyword(v);
                   debouncedSuggest(v);
                   if (v.length >= 2) loadWikiBlurb(v);
-                  else setWikiText("");
+                  else { setWikiText(""); setWikiImage(""); setWikiUrl(""); }
                 }}
                 onFocus={() => { if (suggestions.length) setShowSug(true); }}
                 onBlur={() => setTimeout(() => setShowSug(false), 150)}
@@ -395,6 +426,48 @@ export default function Home() {
               />
             </div>
 
+            {/* Tone (2/12) */}
+            <div className="md:col-span-2">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-1">Tone</label>
+              <select
+                className={`${inputCls} w-full`}
+                value={tone}
+                onChange={(e) => setTone(e.target.value)}
+              >
+                <option value="">Default</option>
+                <option value="Fun">Fun</option>
+                <option value="Family">Family</option>
+                <option value="Cultural">Cultural</option>
+                <option value="Budget">Budget</option>
+              </select>
+            </div>
+
+            {/* Providers (full width) */}
+            <div className="md:col-span-12">
+              <label className="block text-xs uppercase tracking-wide text-white/60 mb-2">
+                Data sources
+              </label>
+              <div className="flex flex-wrap gap-3 text-sm">
+                {[
+                  { id: "ticketmaster", label: "Ticketmaster" },
+                  { id: "eventbrite", label: "Eventbrite" },
+                  { id: "seatgeek", label: "SeatGeek" },
+                  { id: "konzertkasse", label: "Konzertkasse" },
+                  { id: "reservix", label: "Reservix" },
+                ].map((p) => (
+                  <label key={p.id} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-[#007BFF]"
+                      checked={providers.includes(p.id)}
+                      onChange={() => toggleProvider(p.id)}
+                    />
+                    <span>{p.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
             {/* Search button (3/12) */}
             <div className="md:col-span-3 flex items-end">
               <button onClick={handleSearch} disabled={loading} className={`${btnPrimary} w-full`}>
@@ -412,29 +485,148 @@ export default function Home() {
         )}
 
         {/* ---------- Context strip (Wiki + AI) ---------- */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Wiki */}
-          <div className={cardCls}>
+        <div className="grid md:grid-cols-2 gap-4 md:items-stretch mt-6">
+          <div className="bg-slate-800 p-4 rounded-xl flex flex-col">
+            {/* Wiki Section */}
             <h2 className="font-semibold text-white/90 mb-2">
               {infoTitle(keyword, wikiText)}
             </h2>
             {wikiLoading ? (
-              <p className="text-white/50">Finding background…</p>
+              <div className="animate-pulse">
+                <div className="w-full h-40 rounded-lg bg-white/10 mb-3" />
+                <div className="h-4 bg-white/10 rounded w-5/6 mb-2" />
+                <div className="h-4 bg-white/10 rounded w-4/6" />
+              </div>
             ) : wikiText ? (
-              <p className="text-white/80 whitespace-pre-line">{wikiText}</p>
+              <div>
+                {wikiImage && (
+                  <a
+                    href={wikiUrl || undefined}
+                    target={wikiUrl ? "_blank" : undefined}
+                    rel={wikiUrl ? "noreferrer" : undefined}
+                  >
+                    <img
+                      src={wikiImage}
+                      alt={keyword || "Preview image"}
+                      className="w-full max-h-72 object-contain rounded-xl border border-white/10 mb-2 bg-black/20"
+                      loading="lazy"
+                    />
+                  </a>
+                )}
+                {wikiUrl && (
+                  <a href={wikiUrl} target="_blank" rel="noreferrer" className="block text-xs text-white/50 hover:text-white underline mb-2">
+                    From Wikipedia
+                  </a>
+                )}
+                <p className="text-white/80 whitespace-pre-line max-w-prose leading-relaxed hyphens-auto">{wikiText}</p>
+              </div>
             ) : (
               <p className="text-white/50">Type an event name to see a quick background.</p>
             )}
           </div>
-
-          {/* AI */}
-          <div className={cardCls}>
-            <h2 className="font-semibold text-white/90 mb-2">AI Travel Guide</h2>
+          <div className="bg-slate-800 p-4 rounded-xl flex flex-col">
+            {/* PLAN your Fest Section */}
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold text-white/90">PLAN your Fest</h2>
+              {tone && (
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/80">{tone}</span>
+              )}
+            </div>
             {aiSummary ? (
-              <p className="text-white/80 whitespace-pre-line">{aiSummary}</p>
+              <div className="text-white/80 space-y-2 max-w-prose leading-relaxed [>&*:first-child]:mt-0 [>&*:last-child]:mb-0">
+                {(() => {
+                  const lines = aiSummary.split(/\n+/);
+                  const out: JSX.Element[] = [];
+                  let buf: string[] = [];
+                  let currentHeadingKey: string | null = null;
+
+                  const flushParagraph = () => {
+                    if (!buf.length) return;
+                    const text = buf.join(" ");
+                    const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+                    out.push(
+                      <p key={`p-${out.length}`}>
+                        {parts.map((seg, i) =>
+                          /^\*\*.*\*\*$/.test(seg) ? (
+                            <strong key={i} className="text-white">{seg.slice(2, -2)}</strong>
+                          ) : (
+                            <span key={i}>{seg}</span>
+                          )
+                        )}
+                      </p>
+                    );
+                    buf = [];
+                  };
+
+                  const bullets: string[] = [];
+                  const flushList = () => {
+                    if (!bullets.length) return;
+                    const isTop = currentHeadingKey === "top picks";
+                    const ListTag = (isTop ? "ol" : "ul") as any;
+                    const listCls = isTop
+                      ? "list-decimal pl-6 space-y-1.5 marker:text-[#60A5FA] leading-6"
+                      : "list-disc list-outside pl-5 space-y-1.5 marker:text-white/60 leading-6";
+                    out.push(
+                      <ListTag key={`list-${out.length}`} className={listCls}>
+                        {bullets.map((b, i) => (
+                          <li key={i}>{b.replace(/^[-–*]\s*/, "")}</li>
+                        ))}
+                      </ListTag>
+                    );
+                    bullets.length = 0;
+                  };
+
+                  for (const raw of lines) {
+                    const line = raw.trim();
+                    if (!line) { flushParagraph(); flushList(); continue; }
+
+                    // Headings like **Top Picks** or Top Picks (with icons + dividers)
+                    const headingMatch = line.replace(/\*/g, "").match(/^(Top Picks|Suggested Itinerary|Pro Tips)\s*:?$/i);
+                    if (headingMatch) {
+                      flushParagraph();
+                      flushList();
+                      const labelRaw = headingMatch[1];
+                      const labelKey = labelRaw.toLowerCase();
+                      const iconMap: Record<string, string> = {
+                        "top picks": "🎯",
+                        "suggested itinerary": "🎟️",
+                        "pro tips": "🚇",
+                      };
+                      currentHeadingKey = labelKey;
+                      const icon = iconMap[labelKey] || "✨";
+                      // Divider before each section (except very first item)
+                      if (out.length) {
+                        out.push(<div key={`div-${out.length}`} className="h-px bg-white/10 my-2" />);
+                      }
+                      out.push(
+                        <div
+                          key={`h-${out.length}`}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-white text-[13px] font-semibold"
+                        >
+                          <span className="leading-none">{icon}</span>
+                          <span className="leading-none">{labelRaw.replace(/\b\w/g, (m) => m.toUpperCase())}</span>
+                        </div>
+                      );
+                      continue;
+                    }
+
+                    // Bullet item
+                    if (/^[-–*]\s+/.test(line)) {
+                      bullets.push(line);
+                      continue;
+                    }
+
+                    // Default: part of a paragraph
+                    buf.push(line);
+                  }
+                  flushParagraph();
+                  flushList();
+                  return out;
+                })()}
+              </div>
             ) : (
               <p className="text-white/50">
-                {aiInfo || (loading ? "Generating ideas…" : "AI summary will appear here after a search.")}
+                {aiInfo || (loading ? "Planning your fest…" : "Your festival plan will appear here after a search.")}
               </p>
             )}
           </div>
