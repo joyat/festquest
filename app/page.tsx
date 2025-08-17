@@ -1,10 +1,22 @@
 
+/* eslint-disable @next/next/no-img-element */
 "use client";
 import type React from "react";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+
 import { toast } from "../components/Toast";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+/* ---------- URL state helpers (UTF-8 safe) ---------- */
+function encodeState(obj: any) {
+  try { return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); } catch { return ""; }
+}
+function decodeState(s: string) {
+  try { return JSON.parse(decodeURIComponent(escape(atob(s)))); } catch { return null; }
+}
 
 /* ---------- UI utility classes ---------- */
 const inputCls =
@@ -98,9 +110,71 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
 
+  /* ---------- Itinerary items (persist & share via URL) ---------- */
+  const [itinerary, setItinerary] = useState<any[]>([]);
+
   /* ---------- AI summary ---------- */
   const [aiSummary, setAiSummary] = useState<string>("");
   const [aiInfo, setAiInfo] = useState<string>("");
+  const [planningFromItinerary, setPlanningFromItinerary] = useState(false);
+  const [planSections, setPlanSections] = useState<string[]>([]);
+
+  function splitPlan(md: string): string[] {
+    if (!md) return [];
+    const parts = md.split(/\n(?=###\s)/g);
+    if (parts.length <= 1) return [md.trim()];
+    return parts.map(s => s.trim()).filter(Boolean);
+  }
+
+  function joinPlan(sections: string[]): string {
+    return sections.join("\n\n");
+  }
+
+  useEffect(() => {
+    setPlanSections(splitPlan(aiSummary));
+  }, [aiSummary]);
+
+  async function handleSectionAction(
+    action: "regenerate" | "shorten" | "expand",
+    index: number
+  ) {
+    try {
+      const target = planSections[index];
+      if (!target) return;
+      const r = await fetch("/api/plan-section", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, text: target }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to update section");
+
+      const next = [...planSections];
+      next[index] = (j.summary || target).trim();
+      setPlanSections(next);
+
+      const merged = joinPlan(next);
+      setAiSummary(merged);
+      pushUrlState({ aiSummary: merged });
+    } catch (e: any) {
+      toast(e?.message || "Could not update section", "error");
+    }
+  }
+
+  /* ---------- URL sync ---------- */
+  function pushUrlState(extra?: any) {
+    if (typeof window === "undefined") return;
+    const state = {
+      keyword, city, countryCode, startDate, endDate, tone,
+      aiSummary,
+      itinerary,
+      ...extra,
+    };
+    const s = encodeState(state);
+    const url = new URL(window.location.href);
+    url.searchParams.set("s", s);
+    window.history.replaceState(null, "", url.toString());
+  }
 
   /* ---------- Itinerary state (disable “Add” after save) ---------- */
   const [added, setAdded] = useState<Set<string>>(new Set());
@@ -132,7 +206,35 @@ export default function Home() {
   useEffect(() => {
     const saved: any[] = JSON.parse(localStorage.getItem("fq_itinerary") || "[]");
     setAdded(new Set(saved.map((e: any) => e.id)));
+    setItinerary(saved);
   }, []);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const s = url.searchParams.get("s");
+    if (!s) return;
+    const st = decodeState(s);
+    if (!st) return;
+
+    setKeyword(st.keyword || "");
+    setCity(st.city || "");
+    setCountryCode(st.countryCode || "");
+    setStartDate(st.startDate || isoToday());
+    setEndDate(st.endDate || "");
+    setTone(st.tone || "");
+    if (st.aiSummary) setAiSummary(st.aiSummary);
+    if (Array.isArray(st.itinerary)) {
+      try {
+        localStorage.setItem("fq_itinerary", JSON.stringify(st.itinerary));
+      } catch {}
+      setItinerary(st.itinerary);
+      setAdded(new Set(st.itinerary.map((e: any) => e.id)));
+    }
+  }, []);
+
+  useEffect(() => {
+    pushUrlState();
+  }, [keyword, city, countryCode, startDate, endDate, tone, aiSummary, itinerary]);
 
   /* ---------- Save to itinerary & toast feedback ---------- */
   function saveToItineraryUnified(ev: UnifiedEvent) {
@@ -173,6 +275,7 @@ export default function Home() {
 
       const next = [...current, mapped];
       localStorage.setItem(key, JSON.stringify(next));
+      setItinerary(next);
 
       setAdded((prev) => {
         const s = new Set(prev);
@@ -180,11 +283,16 @@ export default function Home() {
         return s;
       });
 
+      pushUrlState({ itinerary: next });
       toast("Added to itinerary 🎉", "success");
     } catch {
       toast("Could not save to itinerary", "error");
     }
   }
+
+  useEffect(() => {
+    try { localStorage.setItem("fq_itinerary", JSON.stringify(itinerary)); } catch {}
+  }, [itinerary]);
 
   /* ---------- Autocomplete (debounced) ---------- */
   function debouncedSuggest(q: string) {
@@ -225,6 +333,39 @@ export default function Home() {
       setWikiUrl(j?.url || "");
     } finally {
       setWikiLoading(false);
+    }
+  }
+
+  /* ---------- Plan from saved itinerary (Groq backend) ---------- */
+  async function planFromItineraryNow() {
+    try {
+      if (!itinerary || itinerary.length === 0) {
+        toast("Your itinerary is empty. Add events first.", "info");
+        return;
+      }
+      setPlanningFromItinerary(true);
+      const payload = {
+        itinerary,
+        city: city || undefined,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        tone: tone || "Default",
+      };
+      const r = await fetch("/api/plan-itinerary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to plan from itinerary");
+      const summary = j?.summary || "";
+      setAiSummary(summary);
+      pushUrlState({ aiSummary: summary, itinerary });
+      toast("Plan updated from your itinerary!", "success");
+    } catch (e: any) {
+      toast(e?.message || "Could not plan from itinerary", "error");
+    } finally {
+      setPlanningFromItinerary(false);
     }
   }
 
@@ -289,10 +430,14 @@ export default function Home() {
           }
         } else {
           const aiData = await ai.json();
-          setAiSummary(aiData?.summary || "");
+          const summary = aiData?.summary || "";
+          setAiSummary(summary);
+          pushUrlState({ aiSummary: summary });
         }
       } else {
-        setAiSummary("No events match your filters. Try widening the dates or clearing country.");
+        const msg = "No events match your filters. Try widening the dates or clearing country.";
+        setAiSummary(msg);
+        pushUrlState({ aiSummary: msg });
       }
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
@@ -526,104 +671,80 @@ export default function Home() {
           </div>
           <div className="bg-slate-800 p-4 rounded-xl flex flex-col">
             {/* PLAN your Fest Section */}
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="font-semibold text-white/90">PLAN your Fest</h2>
-              {tone && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/80">{tone}</span>
-              )}
+            <div className="flex items-center gap-2 flex-wrap mb-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <h2 className="font-semibold text-white/90 whitespace-nowrap">PLAN your Fest</h2>
+                {tone && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/80 whitespace-nowrap">{tone}</span>
+                )}
+              </div>
+              <div className="ml-auto flex items-center gap-2 shrink-0">
+                <button
+                  className="text-[11px] px-2 py-0.5 rounded-full bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                  onClick={planFromItineraryNow}
+                  disabled={planningFromItinerary || (itinerary?.length ?? 0) === 0}
+                  aria-busy={planningFromItinerary}
+                  aria-label="Plan from Itinerary"
+                >
+                  {planningFromItinerary ? "Planning…" : "Plan from Itinerary"}
+                </button>
+                <button
+                  className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10"
+                  onClick={() => {
+                    pushUrlState();
+                    navigator.clipboard.writeText(window.location.href).then(() =>
+                      toast("Link copied!", "success")
+                    );
+                  }}
+                  aria-label="Share"
+                >Share</button>
+              </div>
             </div>
             {aiSummary ? (
-              <div className="text-white/80 space-y-2 max-w-prose leading-relaxed [>&*:first-child]:mt-0 [>&*:last-child]:mb-0">
-                {(() => {
-                  const lines = aiSummary.split(/\n+/);
-                  const out: JSX.Element[] = [];
-                  let buf: string[] = [];
-                  let currentHeadingKey: string | null = null;
-
-                  const flushParagraph = () => {
-                    if (!buf.length) return;
-                    const text = buf.join(" ");
-                    const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
-                    out.push(
-                      <p key={`p-${out.length}`}>
-                        {parts.map((seg, i) =>
-                          /^\*\*.*\*\*$/.test(seg) ? (
-                            <strong key={i} className="text-white">{seg.slice(2, -2)}</strong>
-                          ) : (
-                            <span key={i}>{seg}</span>
-                          )
-                        )}
-                      </p>
-                    );
-                    buf = [];
-                  };
-
-                  const bullets: string[] = [];
-                  const flushList = () => {
-                    if (!bullets.length) return;
-                    const isTop = currentHeadingKey === "top picks";
-                    const ListTag = (isTop ? "ol" : "ul") as any;
-                    const listCls = isTop
-                      ? "list-decimal pl-6 space-y-1.5 marker:text-[#60A5FA] leading-6"
-                      : "list-disc list-outside pl-5 space-y-1.5 marker:text-white/60 leading-6";
-                    out.push(
-                      <ListTag key={`list-${out.length}`} className={listCls}>
-                        {bullets.map((b, i) => (
-                          <li key={i}>{b.replace(/^[-–*]\s*/, "")}</li>
-                        ))}
-                      </ListTag>
-                    );
-                    bullets.length = 0;
-                  };
-
-                  for (const raw of lines) {
-                    const line = raw.trim();
-                    if (!line) { flushParagraph(); flushList(); continue; }
-
-                    // Headings like **Top Picks** or Top Picks (with icons + dividers)
-                    const headingMatch = line.replace(/\*/g, "").match(/^(Top Picks|Suggested Itinerary|Pro Tips)\s*:?$/i);
-                    if (headingMatch) {
-                      flushParagraph();
-                      flushList();
-                      const labelRaw = headingMatch[1];
-                      const labelKey = labelRaw.toLowerCase();
-                      const iconMap: Record<string, string> = {
-                        "top picks": "🎯",
-                        "suggested itinerary": "🎟️",
-                        "pro tips": "🚇",
-                      };
-                      currentHeadingKey = labelKey;
-                      const icon = iconMap[labelKey] || "✨";
-                      // Divider before each section (except very first item)
-                      if (out.length) {
-                        out.push(<div key={`div-${out.length}`} className="h-px bg-white/10 my-2" />);
-                      }
-                      out.push(
-                        <div
-                          key={`h-${out.length}`}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-white text-[13px] font-semibold"
+              planSections.length > 1 ? (
+                <div className="space-y-4">
+                  {planSections.map((sec, i) => (
+                    <section
+                      key={i}
+                      className="relative rounded-xl bg-white/5 border border-white/10 p-4"
+                    >
+                      <div className="absolute top-2 right-2 flex gap-1">
+                        <button
+                          type="button"
+                          className="px-2 py-0.5 text-[11px] rounded bg-white/10 border border-white/10 hover:bg-white/15"
+                          onClick={() => handleSectionAction("regenerate", i)}
+                          title="Regenerate this day"
                         >
-                          <span className="leading-none">{icon}</span>
-                          <span className="leading-none">{labelRaw.replace(/\b\w/g, (m) => m.toUpperCase())}</span>
-                        </div>
-                      );
-                      continue;
-                    }
-
-                    // Bullet item
-                    if (/^[-–*]\s+/.test(line)) {
-                      bullets.push(line);
-                      continue;
-                    }
-
-                    // Default: part of a paragraph
-                    buf.push(line);
-                  }
-                  flushParagraph();
-                  flushList();
-                  return out;
-                })()}
-              </div>
+                          🔄 Regenerate
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-0.5 text-[11px] rounded bg-white/10 border border-white/10 hover:bg-white/15"
+                          onClick={() => handleSectionAction("shorten", i)}
+                          title="Shorten this day"
+                        >
+                          ✂️ Shorten
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-0.5 text-[11px] rounded bg-white/10 border border-white/10 hover:bg-white/15"
+                          onClick={() => handleSectionAction("expand", i)}
+                          title="Expand this day"
+                        >
+                          ➕ Expand
+                        </button>
+                      </div>
+                      <div className="prose prose-invert max-w-none prose-p:my-2 prose-li:my-1 prose-h3:mt-5 prose-h3:mb-2">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{sec}</ReactMarkdown>
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              ) : (
+                <div className="prose prose-invert max-w-none prose-p:my-2 prose-li:my-1 prose-h3:mt-5 prose-h3:mb-2">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiSummary}</ReactMarkdown>
+                </div>
+              )
             ) : (
               <p className="text-white/50">
                 {aiInfo || (loading ? "Planning your fest…" : "Your festival plan will appear here after a search.")}
